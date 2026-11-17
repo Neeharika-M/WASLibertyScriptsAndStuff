@@ -112,23 +112,25 @@ public class HashiCorpVault implements CustomPasswordEncryption {
 		logger.fine("Entering decrypt()" + encryptedInfo);
 		
 		String password = null;
-		//String encPassword = new String(encryptedInfo.getEncryptedBytes(), StandardCharsets.UTF_8);
-		String encPassword = Base64.getEncoder().encodeToString(encryptedInfo.getEncryptedBytes());
-		//byte[] pass = encryptedInfo.getEncryptedBytes();
-		logger.finer("Password : " + encPassword);
-		
+		// the {custom} value is base64 of "<vault path>#<field>", e.g. kv/data/oracle/app1#password
+		String ref = new String(encryptedInfo.getEncryptedBytes(), StandardCharsets.UTF_8);
+		int sep = ref.lastIndexOf('#');
+		if (sep < 1 || sep == ref.length() - 1) {
+			logger.severe("{custom} value must be base64 of <path>#<field>");
+			throw new PasswordDecryptException("{custom} value must be base64 of <path>#<field>");
+		}
+		String secretPath = ref.substring(0, sep).replaceAll("^/+", "");
+		String field = ref.substring(sep + 1);
+		logger.finer("Vault path : " + secretPath + ", field : " + field);
+
 		// make sure that the custom properties have values or throw a password error
 		if (null == hashiURL || null == hashiRoleId || null == hashiSecretId) {
 			logger.severe("JVM custom properties missing for decrypting passwords");
 			throw new PasswordDecryptException("JVM custom properties missing for decrypting passwords");
 		}
 		
-		// check if password needs to go to Vault.  
-		// this is designated with the field in brackets []
+		// log in to Vault, then read <field> from the secret at <vault path>
 		try {
-				String key = encPassword;
-				logger.finer("Key : " + key);
-				
 				// login first to get the token to use for next step
 				byte[] postData = ("{\"role_id\": \"" + hashiRoleId + "\", \"secret_id\": \"" + hashiSecretId + "\"}").getBytes("UTF-8");
 				String postDataLength = Integer.toString(postData.length);
@@ -187,7 +189,7 @@ public class HashiCorpVault implements CustomPasswordEncryption {
 				
 				// ready to send the next request with the token
 				// to get the actual password
-				url = new URL(null, hashiURL + "/secret/data/WAScreds", new sun.net.www.protocol.https.Handler());
+				url = new URL(null, hashiURL + "/" + secretPath, new sun.net.www.protocol.https.Handler());
 				connection = (HttpsURLConnection) url.openConnection();
 				
 				// Configure SSL to accept any certificate
@@ -219,8 +221,11 @@ public class HashiCorpVault implements CustomPasswordEncryption {
 				} else {
 					logger.finer("Response from Vault : " + response.toString());	
 					response = (JSONObject) response.get("data");
-					response = (JSONObject) response.get("data");
-					password = (String) response.get(key);
+					// KV v2 nests the secret one level deeper, next to "metadata"; KV v1 does not
+					if (response.get("metadata") != null) {
+						response = (JSONObject) response.get("data");
+					}
+					password = (String) response.get(field);
 					logger.finest("Password : " + password);
 				}
 				
